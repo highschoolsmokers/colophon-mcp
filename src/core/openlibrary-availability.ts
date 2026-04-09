@@ -5,6 +5,7 @@
 // ---------------------------------------------------------------------------
 
 import type { LibraryListing } from "./types.js";
+import { logger } from "./logger.js";
 
 const BASE = "https://openlibrary.org";
 
@@ -124,7 +125,7 @@ export async function checkAvailabilityByIsbn(isbn: string): Promise<{
 
     return { libraries };
   } catch (err) {
-    console.error("Open Library availability check failed:", isbn, err);
+    logger.warn({ err, isbn }, "Open Library availability check failed");
     return { libraries: [] };
   }
 }
@@ -166,7 +167,7 @@ async function checkAvailabilityEndpoint(
 
     return null;
   } catch (err) {
-    console.error("Open Library edition lookup failed:", err);
+    logger.warn({ err }, "Open Library edition lookup failed");
     return null;
   }
 }

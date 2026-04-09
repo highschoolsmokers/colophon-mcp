@@ -14,6 +14,9 @@ import type {
   KeywordMatch,
 } from "./types.js";
 import { cached } from "./cache.js";
+import { config } from "./config.js";
+import { logger } from "./logger.js";
+import { withCircuitBreaker } from "./circuit-breaker.js";
 
 const BASE = "https://openlibrary.org";
 const COVERS = "https://covers.openlibrary.org";
@@ -134,7 +137,8 @@ async function olFetch<T>(
     }
   }
   const res = await fetch(url.toString(), {
-    headers: { "User-Agent": "ColophonMCP/1.0 (book-lookup-mcp-server)" },
+    headers: { "User-Agent": config.userAgent },
+    signal: AbortSignal.timeout(config.apiTimeout),
   });
   if (!res.ok) {
     throw new Error(
@@ -252,7 +256,9 @@ export function search(params: BookQuery): Promise<{
   results: BookResult[];
 }> {
   const key = `ol:search:${JSON.stringify(params)}`;
-  return cached(key, () => _search(params));
+  return cached(key, () =>
+    withCircuitBreaker("openlibrary", () => _search(params), { results: [] }),
+  );
 }
 
 async function _search(params: BookQuery): Promise<{
@@ -323,7 +329,7 @@ async function _search(params: BookQuery): Promise<{
           ...(work.subject_people ?? []),
         ];
       } catch (err) {
-        console.error("Work detail fetch failed:", doc.key, err);
+        logger.warn({ err, key: doc.key }, "Work detail fetch failed");
       }
 
       const subjects = fullSubjects?.length ? fullSubjects : doc.subject;

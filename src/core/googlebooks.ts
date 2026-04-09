@@ -14,6 +14,8 @@ import type {
   PurchaseListing,
 } from "./types.js";
 import { cached } from "./cache.js";
+import { config } from "./config.js";
+import { logger } from "./logger.js";
 
 const BASE = "https://www.googleapis.com/books/v1";
 
@@ -91,7 +93,8 @@ async function gbFetch<T>(
     }
   }
   const res = await fetch(url.toString(), {
-    headers: { "User-Agent": "ColophonMCP/1.0 (book-lookup-mcp-server)" },
+    headers: { "User-Agent": config.userAgent },
+    signal: AbortSignal.timeout(config.apiTimeout),
   });
   if (!res.ok) {
     throw new Error(
@@ -402,7 +405,7 @@ async function _checkEbookAvailability(params: {
       maxResults: "5",
     });
   } catch (err) {
-    console.error("Google Books ebook check failed:", err);
+    logger.warn({ err }, "Google Books ebook check failed");
     return { ebooks: [], audiobooks: [] };
   }
 

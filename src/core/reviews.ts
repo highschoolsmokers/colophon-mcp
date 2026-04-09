@@ -3,6 +3,7 @@
 // ---------------------------------------------------------------------------
 
 import { cached } from "./cache.js";
+import { logger } from "./logger.js";
 
 // ---------------------------------------------------------------------------
 // Review/rating link generators (no API key needed)
@@ -103,7 +104,7 @@ async function _getOpenLibraryRatings(
 
     return { average, count, wantToRead, currentlyReading, alreadyRead };
   } catch (err) {
-    console.error("Open Library ratings fetch failed:", workKey, err);
+    logger.warn({ err, workKey }, "Open Library ratings fetch failed");
     return null;
   }
 }
@@ -124,7 +125,7 @@ export async function getWorkKeyByIsbn(isbn: string): Promise<string | null> {
       const workPath = data.works?.[0]?.key;
       return workPath ? workPath.replace("/works/", "") : null;
     } catch (err) {
-      console.error("Work key lookup failed:", isbn, err);
+      logger.warn({ err, isbn }, "Work key lookup failed");
       return null;
     }
   });

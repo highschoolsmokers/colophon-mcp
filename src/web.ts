@@ -1,7 +1,11 @@
+import "dotenv/config";
 import express from "express";
 import helmet from "helmet";
 import compression from "compression";
 import rateLimit from "express-rate-limit";
+import cors from "cors";
+import { config } from "./core/config.js";
+import { logger } from "./core/logger.js";
 import * as openLibrary from "./core/openlibrary.js";
 import * as googleBooks from "./core/googlebooks.js";
 import * as abebooks from "./core/abebooks.js";
@@ -11,7 +15,7 @@ import { getReviewLinks } from "./core/reviews.js";
 import { dedup } from "./core/dedup.js";
 
 const app = express();
-const PORT = 3333;
+const PORT = config.port;
 
 // Security headers (allow inline styles/scripts for our server-rendered HTML)
 app.use(
@@ -43,6 +47,14 @@ app.use(
     standardHeaders: true,
     legacyHeaders: false,
   }),
+);
+app.use(express.static("public"));
+// CORS for JSON API endpoints
+app.use("/api", cors());
+// Separate rate limit for cover proxy (more permissive)
+app.use(
+  "/api/cover",
+  rateLimit({ windowMs: 60_000, max: 300, standardHeaders: true, legacyHeaders: false }),
 );
 
 // ---------------------------------------------------------------------------
@@ -77,7 +89,8 @@ function esc(s: string): string {
 }
 
 function qstr(val: unknown): string {
-  return (typeof val === "string" ? val : "").trim();
+  const s = (typeof val === "string" ? val : "").trim();
+  return s.slice(0, config.maxInputLength);
 }
 
 // ---------------------------------------------------------------------------
@@ -93,6 +106,7 @@ function layoutHead(title: string): string {
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>${esc(title)} — Colophon</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>&#128214;</text></svg>">
+<link rel="manifest" href="/manifest.json">
 <link rel="preconnect" href="https://covers.openlibrary.org">
 <link rel="preconnect" href="https://books.google.com">
 <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -306,7 +320,71 @@ function layoutHead(title: string): string {
   .share-btn:hover { border-color: var(--fg); color: var(--fg); }
 
   /* Reading time */
-  .reading-time { font-size: 0.75rem; color: var(--neutral-500); margin-top: 0.15rem; }
+
+  /* Sort controls */
+  .sort-bar { display: flex; gap: 0.75rem; align-items: center; margin-bottom: 1rem; }
+  .sort-bar span { font-size: 0.7rem; color: var(--neutral-500); text-transform: uppercase; letter-spacing: 0.04em; }
+  .sort-bar a { font-size: 0.75rem; text-decoration: none; color: var(--neutral-400); transition: color 0.2s; }
+  .sort-bar a:hover, .sort-bar a.active { color: var(--fg); font-weight: 600; opacity: 1; }
+
+  /* Reading list button */
+  .save-btn { font-size: 0.65rem; color: var(--neutral-400); background: none; border: 1px solid var(--neutral-200);
+    padding: 0.15rem 0.4rem; cursor: pointer; font-family: inherit; transition: all 0.2s; margin-left: 0.5rem; }
+  .save-btn:hover { border-color: var(--fg); color: var(--fg); }
+  .save-btn.saved { border-color: var(--fg); color: var(--fg); }
+
+  /* Reading list page */
+  .reading-list-empty { text-align: center; padding: 3rem 0; color: var(--neutral-400); }
+
+  /* Autocomplete */
+  .ac-wrap { position: relative; flex: 1; }
+  .ac-wrap input { width: 100%; }
+  .ac-list { position: absolute; top: 100%; left: 0; right: 0; background: var(--bg);
+    border: 1px solid var(--neutral-200); z-index: 10; max-height: 240px; overflow-y: auto; display: none; }
+  .ac-list.open { display: block; }
+  .ac-list a { display: block; padding: 0.5rem 0.75rem; text-decoration: none; color: var(--fg);
+    font-size: 0.85rem; border-bottom: 1px solid var(--neutral-200); }
+  .ac-list a:hover { background: var(--neutral-200); opacity: 1; }
+
+  /* Related books */
+  .related { display: flex; gap: 0.75rem; overflow-x: auto; padding-bottom: 0.5rem; }
+  .related-card { flex-shrink: 0; width: 100px; text-align: center; }
+  .related-card img { width: 70px; height: 105px; object-fit: cover; background: var(--neutral-200); }
+  .related-card a { font-size: 0.7rem; text-decoration: none; color: var(--fg); display: block; margin-top: 0.3rem;
+    line-height: 1.2; }
+
+  /* Print */
+  @media print {
+    body { background: #fff; color: #000; padding: 0; }
+    header, .theme-toggle, .search-form, .filters, .sort-bar, .share-btn,
+    .save-btn, .ac-list, .price-slot, .book-actions, #recent { display: none !important; }
+    .card { break-inside: avoid; border-bottom: 1px solid #ccc; }
+    .card img { width: 40px; height: 60px; }
+    a { color: #000; }
+    a[href]::after { content: " (" attr(href) ")"; font-size: 0.7rem; color: #666; }
+    a[href^="/"]::after { display: none; }
+    h2 { border-color: #000; }
+  }
+
+  /* Mobile */
+  @media (max-width: 600px) {
+    body { padding: 1rem; }
+    header h1 { font-size: 1.8rem; }
+    .search-row { flex-wrap: wrap; }
+    .search-row input { min-width: 100%; }
+    .book-detail { flex-direction: column; gap: 1rem; }
+    .book-cover img { width: 120px; }
+    .book-cover .placeholder-lg { width: 120px; height: 180px; }
+    .bio { flex-direction: column; gap: 0.75rem; }
+    .bio img { width: 60px; }
+    .book-actions { flex-wrap: wrap; gap: 0.75rem; }
+    .related { gap: 0.5rem; }
+  }
+
+  /* Empty state */
+  .empty-state { text-align: center; padding: 3rem 0; }
+  .empty-state .icon { font-size: 3rem; margin-bottom: 1rem; }
+  .empty-state p { color: var(--neutral-400); font-size: 0.9rem; }
 
   /* Price slot (lazy-loaded) */
   .price-slot { min-height: 1.2rem; }
@@ -363,6 +441,75 @@ function loadPrices() {
     }).catch(function() { el.innerHTML = ""; });
   });
 }
+// Sort results client-side
+function sortResults(by) {
+  var container = document.querySelector(".results");
+  if (!container) return;
+  var cards = Array.from(container.querySelectorAll(".card"));
+  cards.sort(function(a, b) {
+    if (by === "title") {
+      return (a.querySelector("h3")?.textContent || "").localeCompare(b.querySelector("h3")?.textContent || "");
+    } else if (by === "date") {
+      var ya = (a.querySelector(".meta")?.textContent || "").match(/\\d{4}/);
+      var yb = (b.querySelector(".meta")?.textContent || "").match(/\\d{4}/);
+      return (ya ? parseInt(ya[0]) : 9999) - (yb ? parseInt(yb[0]) : 9999);
+    }
+    return 0;
+  });
+  cards.forEach(function(c) { container.appendChild(c); });
+  container.querySelectorAll(".sort-bar a").forEach(function(a) { a.classList.remove("active"); });
+  document.querySelector('.sort-bar a[data-sort="' + by + '"]')?.classList.add("active");
+}
+// Reading list
+function getReadingList() { return JSON.parse(localStorage.getItem("colophon:readinglist") || "[]"); }
+function saveToReadingList(isbn, title, author) {
+  var list = getReadingList();
+  if (list.some(function(r) { return r.isbn === isbn; })) return;
+  list.push({ isbn: isbn, title: title, author: author, added: new Date().toISOString() });
+  localStorage.setItem("colophon:readinglist", JSON.stringify(list));
+}
+function removeFromReadingList(isbn) {
+  var list = getReadingList().filter(function(r) { return r.isbn !== isbn; });
+  localStorage.setItem("colophon:readinglist", JSON.stringify(list));
+}
+function isInReadingList(isbn) { return getReadingList().some(function(r) { return r.isbn === isbn; }); }
+// Autocomplete
+var acTimeout;
+function setupAutocomplete(input) {
+  var wrap = input.parentElement;
+  if (!wrap.classList.contains("ac-wrap")) return;
+  var list = wrap.querySelector(".ac-list");
+  input.addEventListener("input", function() {
+    clearTimeout(acTimeout);
+    var q = input.value.trim();
+    if (q.length < 3) { list.classList.remove("open"); return; }
+    acTimeout = setTimeout(function() {
+      fetch("https://openlibrary.org/search.json?q=" + encodeURIComponent(q) + "&limit=5&fields=title,author_name")
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+          if (!d.docs || !d.docs.length) { list.classList.remove("open"); return; }
+          list.innerHTML = d.docs.map(function(doc) {
+            var authors = (doc.author_name || []).join(", ");
+            return '<a href="/search?q=' + encodeURIComponent(doc.title) + '">' + doc.title + (authors ? ' <span style="color:var(--neutral-500);font-size:0.75rem">' + authors + '</span>' : '') + '</a>';
+          }).join("");
+          list.classList.add("open");
+        }).catch(function() { list.classList.remove("open"); });
+    }, 300);
+  });
+  input.addEventListener("blur", function() { setTimeout(function() { list.classList.remove("open"); }, 200); });
+  input.addEventListener("focus", function() { if (list.innerHTML) list.classList.add("open"); });
+}
+document.addEventListener("DOMContentLoaded", function() {
+  document.querySelectorAll(".ac-wrap input").forEach(setupAutocomplete);
+  // Mark saved books
+  document.querySelectorAll(".save-btn").forEach(function(btn) {
+    if (isInReadingList(btn.dataset.isbn)) { btn.textContent = "saved"; btn.classList.add("saved"); }
+  });
+});
+// Service worker
+if ("serviceWorker" in navigator) {
+  navigator.serviceWorker.register("/sw.js").catch(function(){});
+}
 </script>
 </head>
 <body>
@@ -394,12 +541,19 @@ function isIsbn(q: string): boolean {
   return /^\d{10}(\d{3})?$/.test(stripped);
 }
 
+// --- Health check ---
+app.get("/api/health", (_req, res) => {
+  res.json({ status: "ok", uptime: process.uptime(), timestamp: new Date().toISOString() });
+});
+
 // --- Cover image proxy: validates and caches cover images ---
+// type=a for author photos (/a/id/), default is book covers (/b/id/)
 app.get("/api/cover/:id", async (req, res) => {
   const id = req.params.id;
   const size = (req.query.s as string) || "M";
+  const type = (req.query.t as string) === "a" ? "a" : "b";
   try {
-    const url = `https://covers.openlibrary.org/b/id/${id}-${size}.jpg`;
+    const url = `https://covers.openlibrary.org/${type}/id/${id}-${size}.jpg`;
     const upstream = await fetch(url, {
       headers: { "User-Agent": "ColophonMCP/1.0" },
       signal: AbortSignal.timeout(5000),
@@ -445,11 +599,14 @@ app.get("/", (_req, res) => {
       `
     <div class="search-form">
       <form class="search-row" action="/search" method="get">
-        <input id="q" name="q" placeholder="Title, author, ISBN, or keyword\u2026" autofocus required>
-        <input type="hidden" name="type" id="search-type" value="smart">
+        <div class="ac-wrap">
+          <input id="q" name="q" placeholder="Title, author, ISBN, or keyword\u2026" autofocus required autocomplete="off">
+          <div class="ac-list"></div>
+        </div>
         <button type="submit">Search</button>
       </form>
     </div>
+    <div style="margin-bottom:1rem"><a href="/reading-list" style="font-size:0.8rem;color:var(--neutral-400);text-decoration:none">Reading list</a></div>
     <div id="recent"></div>
     <script>
     (function() {
@@ -472,12 +629,18 @@ app.get("/", (_req, res) => {
 
 app.get("/search", async (req, res) => {
   const q = qstr(req.query.q);
-  const forceType = qstr(req.query.type);
+  let forceType = qstr(req.query.type);
   if (!q) return res.redirect("/");
 
   // ISBN → book page
   if (isIsbn(q)) {
     return res.redirect(`/book?isbn=${encodeURIComponent(q)}`);
+  }
+
+  // Single word → always title search (never an author name)
+  const isSingleWord = !q.includes(" ");
+  if (isSingleWord && !forceType) {
+    forceType = "title";
   }
 
   res.setHeader("Content-Type", "text/html; charset=utf-8");
@@ -486,7 +649,10 @@ app.get("/search", async (req, res) => {
   const searchBar = `
     <div class="search-form">
       <form class="search-row" action="/search" method="get">
-        <input name="q" value="${esc(q)}" placeholder="Title, author, ISBN, or keyword\u2026">
+        <div class="ac-wrap">
+          <input name="q" value="${esc(q)}" placeholder="Title, author, ISBN, or keyword\u2026" autocomplete="off">
+          <div class="ac-list"></div>
+        </div>
         <button type="submit">Search</button>
       </form>
     </div>
@@ -510,37 +676,54 @@ app.get("/search", async (req, res) => {
       // Forced title search
       res.write(await renderTitleResults(q));
     } else {
-      // Smart: race author + title in parallel, pick the better result
-      const [authorResult, titleResult] = await Promise.allSettled([
-        getAuthorData(q),
-        getTitleData(q),
-      ]);
+      // Smart: fast author probe, then commit to one path
+      // Only probe if multi-word query (single words are always titles)
+      let isAuthor = false;
+      if (q.includes(" ")) {
+        try {
+          const probe = await fetch(
+            `https://openlibrary.org/search/authors.json?q=${encodeURIComponent(q)}&limit=1`,
+            { headers: { "User-Agent": "ColophonMCP/1.0" }, signal: AbortSignal.timeout(2000) },
+          );
+          if (probe.ok) {
+            const data = (await probe.json()) as { docs?: Array<{ work_count?: number }> };
+            isAuthor = (data.docs?.[0]?.work_count ?? 0) >= 5;
+          }
+        } catch {
+          // Probe failed — default to title
+        }
+      }
 
-      const authorData =
-        authorResult.status === "fulfilled" ? authorResult.value : null;
-      const titleData =
-        titleResult.status === "fulfilled" ? titleResult.value : null;
-
-      // Author wins if we got a bio or meaningful title count
-      const authorScore =
-        (authorData?.bio ? 3 : 0) + (authorData?.titles.length ?? 0);
-      const titleScore = titleData?.length ?? 0;
-
-      if (authorScore > titleScore && authorScore > 0) {
-        res.write(renderAuthorHtml(authorData!));
-        res.write(
-          `<p style="font-size:0.75rem;color:var(--neutral-500);margin-top:1rem"><a href="/search?q=${encodeURIComponent(q)}&type=title">Search as title instead</a></p>`,
-        );
-      } else if (titleScore > 0) {
-        res.write(`<h2>${titleData!.length} results</h2>`);
-        res.write(renderTitleCards(titleData!));
+      if (isAuthor) {
+        const authorData = await getAuthorData(q);
+        if (authorData.titles.length > 0) {
+          res.write(renderAuthorHtml(authorData));
+          res.write(
+            `<p style="font-size:0.75rem;color:var(--neutral-500);margin-top:1rem"><a href="/search?q=${encodeURIComponent(q)}&type=title">Search as title instead</a></p>`,
+          );
+        } else {
+          // Author found but no titles — fall back to title search
+          const titleData = await getTitleData(q);
+          if (titleData.length > 0) {
+            res.write(`<h2>${titleData.length} results</h2>`);
+            res.write(renderTitleCards(titleData));
+          } else {
+            res.write(`<div class="empty-state"><div class="icon">\uD83D\uDD0D</div><p>No results found for "${esc(q)}"</p></div>`);
+          }
+          res.write(
+            `<p style="font-size:0.75rem;color:var(--neutral-500);margin-top:1rem"><a href="/search?q=${encodeURIComponent(q)}&type=author">Try as author</a></p>`,
+          );
+        }
+      } else {
+        const titleData = await getTitleData(q);
+        if (titleData.length > 0) {
+          res.write(`<h2>${titleData.length} results</h2>`);
+          res.write(renderTitleCards(titleData));
+        } else {
+          res.write(`<div class="empty-state"><div class="icon">\uD83D\uDD0D</div><p>No results found for "${esc(q)}"</p></div>`);
+        }
         res.write(
           `<p style="font-size:0.75rem;color:var(--neutral-500);margin-top:1rem"><a href="/search?q=${encodeURIComponent(q)}&type=author">Search as author instead</a></p>`,
-        );
-      } else {
-        res.write(`<div class="msg">No results found for "${esc(q)}".</div>`);
-        res.write(
-          `<p style="font-size:0.85rem;margin-top:0.5rem"><a href="/search?q=${encodeURIComponent(q)}&type=author">Try as author</a> <span style="margin:0 0.5rem;color:var(--neutral-400)">\u00b7</span> <a href="/search?q=${encodeURIComponent(q)}&type=title">Try as title</a></p>`,
         );
       }
     }
@@ -569,18 +752,23 @@ async function getAuthorData(q: string) {
 }
 
 async function getTitleData(q: string) {
-  // Use both title-specific search AND general search for better coverage.
-  // General search factors in popularity, so well-known books rank higher.
-  const [olTitle, gbTitle, olGeneral] = await Promise.allSettled([
+  // Title search from both sources in parallel
+  // Only add general search for short queries (≤3 words) where ranking matters
+  const isShortQuery = q.split(/\s+/).length <= 3;
+  const promises: Array<Promise<unknown>> = [
     openLibrary.searchByTitle({ title: q, limit: 10 }),
     googleBooks.searchByTitle({ title: q, limit: 10 }),
-    openLibrary.search({ title: q }),
-  ]);
+  ];
+  if (isShortQuery) {
+    promises.push(openLibrary.search({ title: q }));
+  }
+
+  const [olTitle, gbTitle, olGeneral] = await Promise.allSettled(promises);
 
   // General search results — assign confidence based on title match quality
   const generalResults =
-    olGeneral.status === "fulfilled"
-      ? olGeneral.value.results.map((r) => ({
+    olGeneral?.status === "fulfilled"
+      ? ((olGeneral.value as { results: Array<{ title: string; editions: Array<{ language?: string }> }> }).results).map((r) => ({
           ...r,
           confidence:
             r.title.toLowerCase() === q.toLowerCase()
@@ -592,10 +780,10 @@ async function getTitleData(q: string) {
       : [];
 
   const combined = dedup([
-    ...(olTitle.status === "fulfilled" ? olTitle.value.results : []),
+    ...(olTitle.status === "fulfilled" ? (olTitle.value as { results: Array<Record<string, unknown>> }).results : []),
     ...generalResults,
-    ...(gbTitle.status === "fulfilled" ? gbTitle.value.results : []),
-  ]);
+    ...(gbTitle.status === "fulfilled" ? (gbTitle.value as { results: Array<Record<string, unknown>> }).results : []),
+  ] as Array<{ title: string; authors?: string[]; description?: string; editions: Array<{ isbn?: string; isbn13?: string; language?: string }> }>);
 
   // Sort: exact title matches first, English editions preferred, then by confidence
   const qLower = q.toLowerCase();
@@ -638,8 +826,12 @@ function renderAuthorHtml(data: {
   html += `</h2>`;
   if (data.bio?.photoUrl || data.bio?.bio) {
     html += `<div class="bio">`;
-    if (data.bio.photoUrl)
-      html += `<img src="${esc(data.bio.photoUrl)}" alt="${esc(data.authorName)}">`;
+    if (data.bio.photoUrl) {
+      // Proxy author photos through our server to validate
+      const photoMatch = data.bio.photoUrl.match(/\/a\/id\/(\d+)/);
+      const photoSrc = photoMatch ? `/api/cover/${photoMatch[1]}?s=L&t=a` : data.bio.photoUrl;
+      html += `<img src="${esc(photoSrc)}" alt="${esc(data.authorName)}" onerror="this.remove()">`;
+    }
     if (data.bio.bio)
       html += `<div class="bio-text"><p>${esc(data.bio.bio)}</p></div>`;
     html += `</div>`;
@@ -662,6 +854,94 @@ async function renderTitleResults(q: string): Promise<string> {
 }
 
 // --- Book detail page ---
+// --- Reading list page ---
+app.get("/reading-list", (_req, res) => {
+  res.send(
+    layout(
+      "Reading List",
+      `
+    <h2 style="margin-top:0">Reading list</h2>
+    <div id="reading-list-content"><div class="reading-list-empty">Loading...</div></div>
+    <script>
+    (function() {
+      var list = JSON.parse(localStorage.getItem("colophon:readinglist") || "[]");
+      var el = document.getElementById("reading-list-content");
+      if (!list.length) {
+        el.innerHTML = '<div class="empty-state"><div class="icon">\\uD83D\\uDCDA</div><p>No books saved yet. Click \\u201Csave\\u201D on any book to add it here.</p></div>';
+        return;
+      }
+      var html = '<div class="results">';
+      list.forEach(function(r) {
+        html += '<div class="card"><div class="card-info">';
+        html += '<h3><a href="/book?isbn=' + encodeURIComponent(r.isbn) + '&title=' + encodeURIComponent(r.title) + '" style="text-decoration:none;color:inherit">' + r.title + '</a></h3>';
+        html += '<div class="meta">' + (r.author || "") + '</div>';
+        html += '<div class="isbn">' + r.isbn + ' <button class="save-btn saved" onclick="removeFromReadingList(\\'' + r.isbn + '\\');this.closest(\\'div.card\\').remove()">remove</button></div>';
+        html += '</div></div>';
+      });
+      html += '</div>';
+      html += '<div style="margin-top:1rem"><a href="/api/reading-list.csv" style="font-size:0.8rem;color:var(--neutral-400)">Export as CSV</a></div>';
+      el.innerHTML = html;
+    })();
+    </script>
+  `,
+    ),
+  );
+});
+
+// --- CSV export of reading list ---
+app.get("/api/reading-list.csv", (req, res) => {
+  // Client sends reading list as query param since it's in localStorage
+  res.setHeader("Content-Type", "text/csv");
+  res.setHeader("Content-Disposition", "attachment; filename=reading-list.csv");
+  res.send("Note: Export your reading list from the browser. This endpoint is a placeholder.\nTitle,Author,ISBN,Added\n");
+});
+
+// --- Wikipedia summary API ---
+app.get("/api/wiki/:name", async (req, res) => {
+  const name = req.params.name;
+  try {
+    const url = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(name)}`;
+    const r = await fetch(url, {
+      headers: { "User-Agent": "ColophonMCP/1.0" },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!r.ok) { res.json({ extract: null }); return; }
+    const data = (await r.json()) as { extract?: string; thumbnail?: { source: string } };
+    res.json({ extract: data.extract, thumbnail: data.thumbnail?.source });
+  } catch {
+    res.json({ extract: null });
+  }
+});
+
+// --- Related books by subject ---
+app.get("/api/related/:subject", async (req, res) => {
+  const subject = req.params.subject;
+  try {
+    const url = `https://openlibrary.org/subjects/${encodeURIComponent(subject.toLowerCase().replace(/\s+/g, "_"))}.json?limit=8`;
+    const r = await fetch(url, {
+      headers: { "User-Agent": "ColophonMCP/1.0" },
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!r.ok) { res.json({ works: [] }); return; }
+    const data = (await r.json()) as {
+      works?: Array<{
+        title: string;
+        authors?: Array<{ name: string }>;
+        cover_id?: number;
+        key?: string;
+      }>;
+    };
+    const works = (data.works ?? []).map((w) => ({
+      title: w.title,
+      author: w.authors?.[0]?.name,
+      coverUrl: w.cover_id ? `/api/cover/${w.cover_id}?s=M` : null,
+    }));
+    res.json({ works });
+  } catch {
+    res.json({ works: [] });
+  }
+});
+
 app.get("/book", async (req, res) => {
   const title = qstr(req.query.title);
   const author = qstr(req.query.author);
@@ -715,7 +995,22 @@ app.get("/book", async (req, res) => {
       settled.flatMap((r) => (r.status === "fulfilled" ? r.value.results : [])),
     );
 
+    // Prefer English editions
+    allResults.sort((a, b) => {
+      const aEng = a.editions.some((e) => e.language === "eng") ? 1 : 0;
+      const bEng = b.editions.some((e) => e.language === "eng") ? 1 : 0;
+      return bEng - aEng;
+    });
+
+    // Within the chosen result, sort English editions first
     const book = allResults[0];
+    if (book) {
+      book.editions.sort((a, b) => {
+        const aEng = a.language === "eng" ? 1 : 0;
+        const bEng = b.language === "eng" ? 1 : 0;
+        return bEng - aEng;
+      });
+    }
     if (!book) {
       let noResult = `<div class="msg">No results found${isbn ? ` for ISBN ${esc(isbn)}` : ""}. This ISBN may not be indexed by Open Library or Google Books.</div>`;
       if (isbn) {
@@ -772,10 +1067,7 @@ app.get("/book", async (req, res) => {
       }
       if (ed.pageCount) {
         html += `<div class="detail-row"><span>Pages</span>${ed.pageCount}</div>`;
-        const readingMins = Math.round((ed.pageCount * 250) / 200);
-        const readingHrs = Math.floor(readingMins / 60);
-        const readingRem = readingMins % 60;
-        html += `<div class="reading-time">${readingHrs > 0 ? `${readingHrs}h ${readingRem}m` : `${readingMins}m`} estimated reading time</div>`;
+
       }
       if (ed.language && ed.language !== "unknown") {
         html += `<div class="detail-row"><span>Language</span>${esc(ed.language)}</div>`;
@@ -816,6 +1108,23 @@ app.get("/book", async (req, res) => {
         html += `<tr><td>eBay: ${esc(eb.seller.replace("eBay: ", ""))}</td><td>${esc(eb.condition)}</td><td class="price">${esc(eb.price)}</td><td><a href="${esc(eb.url)}" target="_blank">Buy \u2192</a></td></tr>`;
       }
       html += `</table></div>`;
+
+      // Edition comparison (if multiple editions)
+      if (book.editions.length > 1) {
+        html += `<h2>Editions</h2><div class="pricing"><table>
+          <tr><th>Format</th><th>Publisher</th><th>Date</th><th>Pages</th><th>Language</th><th>ISBN</th></tr>`;
+        for (const ed of book.editions.slice(0, 10)) {
+          html += `<tr>
+            <td>${esc(ed.format)}</td>
+            <td>${esc(ed.publisher)}</td>
+            <td>${esc(ed.publishDate)}</td>
+            <td>${ed.pageCount ?? "\u2014"}</td>
+            <td>${esc(ed.language)}</td>
+            <td style="font-family:monospace;font-size:0.8rem">${esc(ed.isbn13 ?? ed.isbn ?? "\u2014")}</td>
+          </tr>`;
+        }
+        html += `</table></div>`;
+      }
 
       // Also search at
       html += `<h2>Also search at</h2><div style="display:flex;flex-wrap:wrap;gap:0.5rem;margin-bottom:2rem">`;
@@ -869,6 +1178,37 @@ app.get("/book", async (req, res) => {
         html += `<a href="${esc(link.url)}" target="_blank" style="font-size:0.85rem;border:1px solid var(--neutral-200);padding:0.4rem 0.75rem;text-decoration:none;color:var(--fg);transition:border-color 0.2s">${esc(link.name)}</a>`;
       }
       html += `</div>`;
+
+      // Related books (loaded client-side from first subject)
+      if (book.subjects?.length) {
+        const firstSubject = book.subjects[0];
+        html += `<h2>Related books</h2><div class="related" id="related-books"></div>
+        <script>
+        fetch("/api/related/${encodeURIComponent(firstSubject)}")
+          .then(function(r){return r.json()})
+          .then(function(d){
+            var el=document.getElementById("related-books");
+            if(!d.works||!d.works.length){el.remove();el.previousElementSibling?.remove();return}
+            el.innerHTML=d.works.map(function(w){
+              return '<div class="related-card">'+(w.coverUrl?'<img src="'+w.coverUrl+'" alt="'+w.title+'" loading="lazy">':'')+'<a href="/search?q='+encodeURIComponent(w.title)+'">'+w.title+'</a></div>';
+            }).join("");
+          }).catch(function(){});
+        </script>`;
+      }
+
+      // Wikipedia summary for author (loaded client-side)
+      if (book.authors[0]) {
+        html += `<div id="wiki-summary"></div>
+        <script>
+        fetch("/api/wiki/${encodeURIComponent(book.authors[0])}")
+          .then(function(r){return r.json()})
+          .then(function(d){
+            if(!d.extract)return;
+            var el=document.getElementById("wiki-summary");
+            el.innerHTML='<h2>About ${esc(book.authors[0])}</h2><p style="font-size:0.85rem;line-height:1.6;color:var(--neutral-700)">'+d.extract+'</p>';
+          }).catch(function(){});
+        </script>`;
+      }
 
       // Re-open the book-meta div we closed for the table
       html += `<div style="display:none">`;
@@ -1122,6 +1462,15 @@ function renderTitleCards(titles: TitleEntry[]): string {
     </script>`;
   }
 
+  // Sort bar
+  if (titles.length > 3) {
+    html += `<div class="sort-bar"><span>Sort</span>
+      <a href="#" class="active" data-sort="relevance" onclick="event.preventDefault()">Relevance</a>
+      <a href="#" data-sort="title" onclick="event.preventDefault();sortResults('title')">Title</a>
+      <a href="#" data-sort="date" onclick="event.preventDefault();sortResults('date')">Date</a>
+    </div>`;
+  }
+
   html += `<div class="results">`;
 
   for (const t of titles) {
@@ -1158,7 +1507,7 @@ function renderTitleCards(titles: TitleEntry[]): string {
     }
 
     html += `${renderEditionIsbns(t)}
-      <div class="editions">${t.editions.length} edition(s)</div>
+      <div class="editions">${t.editions.length} edition(s)${isbn ? `<button class="save-btn" data-isbn="${esc(isbn)}" onclick="saveToReadingList('${esc(isbn)}','${esc(t.title.replace(/'/g, ""))}','${esc((t.authors?.[0] ?? "").replace(/'/g, ""))}');this.textContent='saved';this.classList.add('saved')">save</button>` : ""}</div>
     </div></div>`;
   }
 
@@ -1221,5 +1570,5 @@ function renderEditionIsbns(t: {
 // ---------------------------------------------------------------------------
 
 app.listen(PORT, () => {
-  console.log(`Colophon web UI running at http://localhost:${PORT}`);
+  logger.info({ port: PORT }, `Colophon web UI running at http://localhost:${PORT}`);
 });

@@ -28,7 +28,7 @@ async function fetchImage(
     const base64 = Buffer.from(buffer).toString("base64");
     return { type: "image" as const, data: base64, mimeType: contentType };
   } catch (err) {
-    console.error("Failed to fetch image:", url, err);
+    // Silently fail — image fetch errors are expected for missing covers
     return null;
   }
 }

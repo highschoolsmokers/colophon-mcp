@@ -5,6 +5,7 @@
 import type { PurchaseListing } from "./types.js";
 import * as abebooks from "./abebooks.js";
 import { cached } from "./cache.js";
+import { logger } from "./logger.js";
 
 // ---------------------------------------------------------------------------
 // Search URL generators (no API needed — just construct URLs)
@@ -81,7 +82,7 @@ async function ebayApiSearch(isbn: string): Promise<PurchaseListing[]> {
         : undefined,
     }));
   } catch (err) {
-    console.error("eBay API search failed:", isbn, err);
+    logger.warn({ err, isbn }, "eBay API search failed");
     return [];
   }
 }

@@ -5,6 +5,7 @@
 // ---------------------------------------------------------------------------
 
 import type { PurchaseListing } from "./types.js";
+import { logger } from "./logger.js";
 
 const ENDPOINT =
   "https://www.abebooks.com/servlet/DWRestService/pricingservice";
@@ -98,7 +99,7 @@ export async function lookupByIsbn(isbn: string): Promise<{
 
     return { buyNew, buyUsed };
   } catch (err) {
-    console.error("AbeBooks lookup failed:", isbn, err);
+    logger.warn({ err, isbn }, "AbeBooks lookup failed");
     return { buyNew: [], buyUsed: [] };
   }
 }

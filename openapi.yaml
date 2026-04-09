@@ -1,0 +1,110 @@
+openapi: 3.0.3
+info:
+  title: Colophon API
+  description: Book search and pricing API endpoints
+  version: 1.0.0
+servers:
+  - url: http://localhost:3333
+paths:
+  /api/prices/{isbn}:
+    get:
+      summary: Get retailer pricing for a book by ISBN
+      parameters:
+        - name: isbn
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "9781598531497"
+      responses:
+        "200":
+          description: Price comparison from multiple retailers
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/PriceComparison"
+  /api/cover/{id}:
+    get:
+      summary: Proxy and validate Open Library cover image
+      description: Returns the cover image if valid, 404 if the cover doesn't exist or is a placeholder
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          example: "924990"
+        - name: s
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [S, M, L]
+            default: M
+          description: Image size (S=small, M=medium, L=large)
+      responses:
+        "200":
+          description: Cover image
+          content:
+            image/jpeg:
+              schema:
+                type: string
+                format: binary
+        "404":
+          description: Cover not found or is a placeholder
+components:
+  schemas:
+    PriceComparison:
+      type: object
+      properties:
+        isbn:
+          type: string
+        abebooks:
+          type: object
+          properties:
+            newPrice:
+              type: string
+              example: "US$ 24.99"
+            usedPrice:
+              type: string
+              example: "US$ 8.50"
+            newUrl:
+              type: string
+              format: uri
+            usedUrl:
+              type: string
+              format: uri
+        ebay:
+          type: array
+          items:
+            $ref: "#/components/schemas/PurchaseListing"
+        links:
+          type: array
+          items:
+            type: object
+            properties:
+              name:
+                type: string
+                example: Amazon
+              url:
+                type: string
+                format: uri
+    PurchaseListing:
+      type: object
+      properties:
+        title:
+          type: string
+        isbn:
+          type: string
+        seller:
+          type: string
+        condition:
+          type: string
+          enum: [new, used, like-new, very-good, good, acceptable]
+        price:
+          type: string
+        currency:
+          type: string
+        url:
+          type: string
+          format: uri
