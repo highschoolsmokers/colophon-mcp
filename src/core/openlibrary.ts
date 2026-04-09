@@ -310,82 +310,28 @@ async function _search(params: BookQuery): Promise<{
 
   const data = await olFetch<OLSearchResponse>("/search.json", searchParams);
 
-  const results: BookResult[] = await Promise.all(
-    data.docs.map(async (doc) => {
-      // Fetch work details for description, TOC, and richer subjects
-      let description: string | undefined;
-      let tableOfContents: string[] | undefined;
-      let fullSubjects: string[] | undefined;
-      try {
-        const work = await olFetch<OLWork>(`${doc.key}.json`);
-        description = parseDescription(work.description);
-        if (work.table_of_contents?.length) {
-          tableOfContents = work.table_of_contents.map((c) => c.title);
-        }
-        fullSubjects = [
-          ...(work.subjects ?? []),
-          ...(work.subject_places ?? []),
-          ...(work.subject_times ?? []),
-          ...(work.subject_people ?? []),
-        ];
-      } catch (err) {
-        logger.warn({ err, key: doc.key }, "Work detail fetch failed");
-      }
+  const results: BookResult[] = data.docs.map((doc) => {
+      // Use search-level data only (no per-work fetches for speed)
+      const subjects = doc.subject;
 
-      const subjects = fullSubjects?.length ? fullSubjects : doc.subject;
-
-      // Build keyword matches against all available metadata
+      // Build keyword matches against search-level metadata
       let keywordMatches: KeywordMatch[] | undefined;
       if (params.keywords?.length) {
         const matches = buildKeywordMatches(doc, params.keywords);
-
-        // Also check description
-        if (description) {
-          for (const kw of params.keywords) {
-            const lower = kw.toLowerCase();
-            if (description.toLowerCase().includes(lower)) {
-              const idx = description.toLowerCase().indexOf(lower);
-              const start = Math.max(0, idx - 60);
-              const end = Math.min(description.length, idx + kw.length + 60);
-              matches.push({
-                keyword: kw,
-                matchedIn: "description",
-                snippet: `…${description.slice(start, end)}…`,
-              });
-            }
-          }
-        }
-
-        // Check TOC
-        if (tableOfContents) {
-          for (const kw of params.keywords) {
-            const lower = kw.toLowerCase();
-            const tocHit = tableOfContents.find((c) =>
-              c.toLowerCase().includes(lower),
-            );
-            if (tocHit) {
-              matches.push({ keyword: kw, matchedIn: "toc", snippet: tocHit });
-            }
-          }
-        }
-
         if (matches.length) keywordMatches = matches;
       }
 
       return {
         title: doc.title,
         authors: doc.author_name ?? [],
-        description,
         subjects,
-        tableOfContents,
         keywordMatches,
         editions: searchDocToEditions(doc),
         buyNew: [],
         buyUsed: [],
         libraries: [],
       } satisfies BookResult;
-    }),
-  );
+    });
 
   return { results };
 }

@@ -88,6 +88,19 @@ function esc(s: string): string {
     .replace(/"/g, "&quot;");
 }
 
+/** Strip markdown formatting from book descriptions */
+function stripMarkdown(text: string): string {
+  return text
+    .replace(/\*\*([^*]+)\*\*/g, "$1") // **bold**
+    .replace(/\*([^*]+)\*/g, "$1")     // *italic*
+    .replace(/__([^_]+)__/g, "$1")     // __bold__
+    .replace(/_([^_]+)_/g, "$1")       // _italic_
+    .replace(/#{1,6}\s/g, "")          // # headers
+    .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1") // [links](url)
+    .replace(/!\[([^\]]*)\]\([^)]+\)/g, "") // ![images](url)
+    .trim();
+}
+
 function qstr(val: unknown): string {
   const s = (typeof val === "string" ? val : "").trim();
   return s.slice(0, config.maxInputLength);
@@ -484,7 +497,7 @@ function setupAutocomplete(input) {
     var q = input.value.trim();
     if (q.length < 3) { list.classList.remove("open"); return; }
     acTimeout = setTimeout(function() {
-      fetch("https://openlibrary.org/search.json?q=" + encodeURIComponent(q) + "&limit=5&fields=title,author_name")
+      fetch("/api/autocomplete?q=" + encodeURIComponent(q))
         .then(function(r) { return r.json(); })
         .then(function(d) {
           if (!d.docs || !d.docs.length) { list.classList.remove("open"); return; }
@@ -501,9 +514,16 @@ function setupAutocomplete(input) {
 }
 document.addEventListener("DOMContentLoaded", function() {
   document.querySelectorAll(".ac-wrap input").forEach(setupAutocomplete);
-  // Mark saved books
+  // Mark saved books + delegate save clicks
   document.querySelectorAll(".save-btn").forEach(function(btn) {
     if (isInReadingList(btn.dataset.isbn)) { btn.textContent = "saved"; btn.classList.add("saved"); }
+  });
+  document.addEventListener("click", function(e) {
+    var btn = e.target.closest?.(".save-btn");
+    if (!btn || btn.classList.contains("saved")) return;
+    saveToReadingList(btn.dataset.isbn, btn.dataset.title, btn.dataset.author);
+    btn.textContent = "saved";
+    btn.classList.add("saved");
   });
 });
 // Service worker
@@ -541,37 +561,71 @@ function isIsbn(q: string): boolean {
   return /^\d{10}(\d{3})?$/.test(stripped);
 }
 
+// --- Autocomplete proxy ---
+app.get("/api/autocomplete", async (req, res) => {
+  const q = qstr(req.query.q);
+  if (q.length < 2) { res.json({ docs: [] }); return; }
+  try {
+    const r = await fetch(
+      `https://openlibrary.org/search.json?q=${encodeURIComponent(q)}&limit=5&fields=title,author_name`,
+      { headers: { "User-Agent": config.userAgent }, signal: AbortSignal.timeout(config.apiTimeout) },
+    );
+    if (!r.ok) { res.json({ docs: [] }); return; }
+    const data = await r.json();
+    res.json(data);
+  } catch {
+    res.json({ docs: [] });
+  }
+});
+
 // --- Health check ---
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", uptime: process.uptime(), timestamp: new Date().toISOString() });
 });
 
 // --- Cover image proxy: validates and caches cover images ---
-// type=a for author photos (/a/id/), default is book covers (/b/id/)
+import { get as cacheGet, set as cacheSet } from "./core/cache.js";
+
+const COVER_CACHE_TTL = 24 * 60 * 60 * 1000; // 24 hours
+
 app.get("/api/cover/:id", async (req, res) => {
   const id = req.params.id;
   const size = (req.query.s as string) || "M";
   const type = (req.query.t as string) === "a" ? "a" : "b";
+  const cacheKey = `cover:${type}:${id}:${size}`;
+
+  // Check server-side cache
+  const cached = cacheGet<{ contentType: string; data: Buffer } | null>(cacheKey);
+  if (cached !== undefined) {
+    if (cached === null) { res.status(404).end(); return; }
+    res.setHeader("Content-Type", cached.contentType);
+    res.setHeader("Cache-Control", "public, max-age=86400");
+    res.send(cached.data);
+    return;
+  }
+
   try {
     const url = `https://covers.openlibrary.org/${type}/id/${id}-${size}.jpg`;
     const upstream = await fetch(url, {
-      headers: { "User-Agent": "ColophonMCP/1.0" },
-      signal: AbortSignal.timeout(5000),
+      headers: { "User-Agent": config.userAgent },
+      signal: AbortSignal.timeout(config.coverTimeout),
       redirect: "follow",
     });
     const contentType = upstream.headers.get("content-type") ?? "";
     const buffer = Buffer.from(await upstream.arrayBuffer());
 
-    // If it's not actually an image or too small, return a 1x1 transparent PNG
     if (!contentType.startsWith("image/") || buffer.length < 100) {
+      cacheSet(cacheKey, null, COVER_CACHE_TTL);
       res.status(404).end();
       return;
     }
 
+    cacheSet(cacheKey, { contentType, data: buffer }, COVER_CACHE_TTL);
     res.setHeader("Content-Type", contentType);
     res.setHeader("Cache-Control", "public, max-age=86400");
     res.send(buffer);
   } catch {
+    cacheSet(cacheKey, null, 5 * 60 * 1000); // cache failures for 5 min
     res.status(404).end();
   }
 });
@@ -879,7 +933,8 @@ app.get("/reading-list", (_req, res) => {
         html += '</div></div>';
       });
       html += '</div>';
-      html += '<div style="margin-top:1rem"><a href="/api/reading-list.csv" style="font-size:0.8rem;color:var(--neutral-400)">Export as CSV</a></div>';
+      html += '<div style="margin-top:1rem"><button id="export-csv" style="font-size:0.8rem;color:var(--neutral-400);background:none;border:1px solid var(--neutral-200);padding:0.3rem 0.6rem;cursor:pointer;font-family:inherit">Export as CSV</button></div>';
+      html += '<script>document.getElementById("export-csv")?.addEventListener("click",function(){var list=JSON.parse(localStorage.getItem("colophon:readinglist")||"[]");var csv="Title,Author,ISBN,Added\\n"+list.map(function(r){return [r.title,r.author,r.isbn,r.added].map(function(f){return \\'\"\\'+String(f||\\'\\').replace(/"/g,\\'""\\')+"\\""}).join(",")}).join("\\n");var blob=new Blob([csv],{type:"text/csv"});var a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download="reading-list.csv";a.click()});</script>';
       el.innerHTML = html;
     })();
     </script>
@@ -888,13 +943,7 @@ app.get("/reading-list", (_req, res) => {
   );
 });
 
-// --- CSV export of reading list ---
-app.get("/api/reading-list.csv", (req, res) => {
-  // Client sends reading list as query param since it's in localStorage
-  res.setHeader("Content-Type", "text/csv");
-  res.setHeader("Content-Disposition", "attachment; filename=reading-list.csv");
-  res.send("Note: Export your reading list from the browser. This endpoint is a placeholder.\nTitle,Author,ISBN,Added\n");
-});
+// CSV export is client-side (reading list is in localStorage)
 
 // --- Wikipedia summary API ---
 app.get("/api/wiki/:name", async (req, res) => {
@@ -1216,7 +1265,7 @@ app.get("/book", async (req, res) => {
 
     // Description
     if (book.description) {
-      html += `<div class="description">${esc(book.description)}</div>`;
+      html += `<div class="description">${esc(stripMarkdown(book.description))}</div>`;
     }
 
     // Subjects
@@ -1464,11 +1513,12 @@ function renderTitleCards(titles: TitleEntry[]): string {
 
   // Sort bar
   if (titles.length > 3) {
-    html += `<div class="sort-bar"><span>Sort</span>
-      <a href="#" class="active" data-sort="relevance" onclick="event.preventDefault()">Relevance</a>
-      <a href="#" data-sort="title" onclick="event.preventDefault();sortResults('title')">Title</a>
-      <a href="#" data-sort="date" onclick="event.preventDefault();sortResults('date')">Date</a>
-    </div>`;
+    html += `<div class="sort-bar" id="sort-bar"><span>Sort</span>
+      <a href="#" class="active" data-sort="relevance">Relevance</a>
+      <a href="#" data-sort="title">Title</a>
+      <a href="#" data-sort="date">Date</a>
+    </div>
+    <script>document.getElementById("sort-bar")?.addEventListener("click",function(e){e.preventDefault();var t=e.target;if(t.dataset?.sort&&t.dataset.sort!=="relevance"){sortResults(t.dataset.sort)}else if(t.dataset?.sort==="relevance"){location.reload()}});</script>`;
   }
 
   html += `<div class="results">`;
@@ -1507,7 +1557,7 @@ function renderTitleCards(titles: TitleEntry[]): string {
     }
 
     html += `${renderEditionIsbns(t)}
-      <div class="editions">${t.editions.length} edition(s)${isbn ? `<button class="save-btn" data-isbn="${esc(isbn)}" onclick="saveToReadingList('${esc(isbn)}','${esc(t.title.replace(/'/g, ""))}','${esc((t.authors?.[0] ?? "").replace(/'/g, ""))}');this.textContent='saved';this.classList.add('saved')">save</button>` : ""}</div>
+      <div class="editions">${t.editions.length} edition(s)${isbn ? `<button class="save-btn" data-isbn="${esc(isbn)}" data-title="${esc(t.title)}" data-author="${esc(t.authors?.[0] ?? "")}">save</button>` : ""}</div>
     </div></div>`;
   }
 
@@ -1568,6 +1618,13 @@ function renderEditionIsbns(t: {
 // ---------------------------------------------------------------------------
 // Start
 // ---------------------------------------------------------------------------
+
+// --- 404 page ---
+app.use((_req, res) => {
+  res.status(404).send(
+    layout("Not Found", `<div class="empty-state"><div class="icon">\uD83D\uDCD6</div><p>Page not found</p><p style="margin-top:0.5rem"><a href="/">Back to search</a></p></div>`),
+  );
+});
 
 app.listen(PORT, () => {
   logger.info({ port: PORT }, `Colophon web UI running at http://localhost:${PORT}`);
