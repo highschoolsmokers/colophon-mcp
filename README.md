@@ -76,14 +76,37 @@ Then ask Claude naturally: "search for books by Nan Goldin", "find I Remember by
 
 ### Docker
 
-```bash
-docker build -t colophon .
+Two Dockerfiles: one for the web UI, one for the MCP server.
 
-# Web UI (default)
+```bash
+# Web UI
+docker build -t colophon .
 docker run -p 3333:3333 colophon
 
+# With API keys
+docker run -p 3333:3333 \
+  -e GOOGLE_BOOKS_API_KEY=your_key \
+  -e EBAY_APP_TOKEN=your_token \
+  colophon
+```
+
+```bash
 # MCP server
-docker run colophon node dist/index.js
+docker build -f Dockerfile.mcp -t colophon-mcp .
+docker run -i colophon-mcp
+```
+
+To use the dockerized MCP server with Claude Code, add to `~/.claude.json`:
+
+```json
+{
+  "mcpServers": {
+    "colophon": {
+      "command": "docker",
+      "args": ["run", "-i", "colophon-mcp"]
+    }
+  }
+}
 ```
 
 ### MCP Inspector
