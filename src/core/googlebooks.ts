@@ -87,6 +87,9 @@ async function gbFetch<T>(
   params?: Record<string, string>,
 ): Promise<T> {
   const url = new URL(path, BASE);
+  if (config.googleBooksApiKey) {
+    url.searchParams.set("key", config.googleBooksApiKey);
+  }
   if (params) {
     for (const [k, v] of Object.entries(params)) {
       url.searchParams.set(k, v);
