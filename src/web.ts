@@ -741,7 +741,7 @@ app.get("/search", async (req, res) => {
           );
           if (probe.ok) {
             const data = (await probe.json()) as { docs?: Array<{ work_count?: number }> };
-            isAuthor = (data.docs?.[0]?.work_count ?? 0) >= 5;
+            isAuthor = (data.docs?.[0]?.work_count ?? 0) >= 1;
           }
         } catch {
           // Probe failed — default to title
@@ -773,12 +773,29 @@ app.get("/search", async (req, res) => {
         if (titleData.length > 0) {
           res.write(`<h2>${titleData.length} results</h2>`);
           res.write(renderTitleCards(titleData));
+          res.write(
+            `<p style="font-size:0.75rem;color:var(--neutral-500);margin-top:1rem"><a href="/search?q=${encodeURIComponent(q)}&type=author">Search as author instead</a></p>`,
+          );
+        } else if (q.includes(" ")) {
+          // Title search returned nothing — try author as fallback
+          const authorData = await getAuthorData(q);
+          if (authorData.titles.length > 0) {
+            res.write(renderAuthorHtml(authorData));
+            res.write(
+              `<p style="font-size:0.75rem;color:var(--neutral-500);margin-top:1rem"><a href="/search?q=${encodeURIComponent(q)}&type=title">Search as title instead</a></p>`,
+            );
+          } else {
+            res.write(`<div class="empty-state"><div class="icon">\uD83D\uDD0D</div><p>No results found for "${esc(q)}"</p></div>`);
+            res.write(
+              `<p style="font-size:0.85rem;margin-top:0.5rem"><a href="/search?q=${encodeURIComponent(q)}&type=author">Try as author</a> <span style="margin:0 0.5rem;color:var(--neutral-400)">\u00b7</span> <a href="/search?q=${encodeURIComponent(q)}&type=title">Try as title</a></p>`,
+            );
+          }
         } else {
           res.write(`<div class="empty-state"><div class="icon">\uD83D\uDD0D</div><p>No results found for "${esc(q)}"</p></div>`);
+          res.write(
+            `<p style="font-size:0.75rem;color:var(--neutral-500);margin-top:1rem"><a href="/search?q=${encodeURIComponent(q)}&type=author">Search as author instead</a></p>`,
+          );
         }
-        res.write(
-          `<p style="font-size:0.75rem;color:var(--neutral-500);margin-top:1rem"><a href="/search?q=${encodeURIComponent(q)}&type=author">Search as author instead</a></p>`,
-        );
       }
     }
   } catch (err) {
